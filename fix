@@ -1,0 +1,70 @@
+#/bin/sh
+
+# Usage: ./fix {start|fix|check|pass|newmac} <id>
+
+cmd=$1
+id=$2
+mysql="/usr/local/mysql/bin/mysql --defaults-extra-file=/var/www/imessage/conf/my.cnf -s -N -e"
+
+case $cmd in
+    start)
+        accountid=`$mysql "SELECT l.id FROM imaccount_log l JOIN imaccount a ON l.account_id = a.id WHERE a.status = 1 AND l.device_id = $id"`
+        if [[ $accountid == "" ]]; then
+            $mysql "UPDATE imaccount_log SET device_id = $id WHERE device_id = 0 AND sender_id > 0 LIMIT 1"
+            accountid=`$mysql "SELECT l.id FROM imaccount_log l JOIN imaccount a ON l.account_id = a.id WHERE a.status = 1 AND l.device_id = $id"`
+            $mysql "UPDATE imaccount_log l, device d SET l.device_mac = d.mac WHERE l.device_id = d.id AND l.id = $accountid"
+        fi
+        if [[ $accountid != "" ]]; then
+            account=`$mysql "SELECT l.id, a.account, a.passwd FROM imaccount_log l JOIN imaccount a ON a.id = l.account_id WHERE l.id = $accountid"`
+            echo $account
+        fi
+        ;;
+    fix)
+        $mysql "UPDATE imaccount_log l, sender s SET l.start_time = CURRENT_TIMESTAMP, s.cmd_type = 7, s.status = 1, s.retry = 2, s.last_action = CURRENT_TIMESTAMP WHERE l.id = $id AND l.sender_id = s.id"
+        ;;
+    check)
+        sender_info=`$mysql "SELECT s.cmd_type, s.status, s.retry, a.status FROM imaccount_log l JOIN sender s ON l.id = s.account_id JOIN imaccount a ON a.id = l.account_id WHERE l.id = $id"`
+        cmd_type=${sender_info:0:1}
+        status=${sender_info:2:1}
+        retry=${sender_info:4:1}
+        account_status=${sender_info:6:1}
+        if [[ $cmd_type == "" ]]; then
+            echo "0"
+            exit
+        fi
+        res="0"
+        if [[ $cmd_type -eq 0 && $retry -eq 0 && $status -eq 5 && account_status -eq 1 ]]; then
+            res="0"
+        elif [[ $cmd_type -eq 7 && $status -eq 2 ]]; then
+            res="1"
+        elif [[ $cmd_type -eq 7 ]]; then
+            res="0"
+        else
+            res="1"
+        fi
+        echo $res
+        if [[ $res -eq 1 ]]; then
+            $mysql "UPDATE imaccount_log l, imaccount a SET a.status = 2 WHERE l.id = $id AND l.account_id = a.id"
+        fi
+        ;;
+    pass)
+        $mysql "UPDATE imaccount_log l, sender s, imaccount a SET l.active_time = CURRENT_TIMESTAMP, a.status = 2, s.cmd_type = 0, s.status = 5, s.retry = 0 WHERE l.id = $id AND l.id = s.account_id AND l.account_id = a.id"
+        ;;
+    newmac)
+        oldmac=`$mysql "SELECT mac FROM device WHERE id = $id"`
+        t=${oldmac:0:1}
+        if [[ $t -eq 0 ]]; then
+            newt="1"
+        elif [[ $t -eq 1 ]]; then
+            newt="2"
+        else
+            newt="0"
+        fi
+        c=`printf "%X%X:%X%X:%X%X:%X%X" $((RANDOM%16)) $((RANDOM%16)) $((RANDOM%16)) $((RANDOM%16)) $((RANDOM%16)) $((RANDOM%16)) $((RANDOM%16)) $((RANDOM%16))`
+        newmac="${newt}0:${oldmac:3:2}:$c"
+        ip="10.0.3.${newt}${oldmac:3:2}"
+        $mysql "UPDATE device SET mac='$newmac', ipaddress='$ip' WHERE id = $id"
+	echo $newmac
+        ;;
+esac
+
